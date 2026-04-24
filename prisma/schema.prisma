@@ -1,0 +1,335 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  BUILDER
+  OPERATOR
+  VIEWER
+}
+
+enum WorkflowStatus {
+  DRAFT
+  ACTIVE
+  ARCHIVED
+}
+
+enum TriggerType {
+  MANUAL
+  SCHEDULE
+  WEBHOOK
+  EVENT
+}
+
+enum StepType {
+  AI_TASK
+  CONDITION
+  APPROVAL
+  TOOL_ACTION
+  HUMAN_TASK
+  DELAY
+  NOTIFICATION
+}
+
+enum RunStatus {
+  QUEUED
+  RUNNING
+  WAITING_APPROVAL
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+enum StepRunStatus {
+  PENDING
+  RUNNING
+  WAITING_INPUT
+  COMPLETED
+  FAILED
+  SKIPPED
+  CANCELED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+  CANCELED
+}
+
+enum AuditActorType {
+  USER
+  SYSTEM
+  AGENT
+  API_KEY
+}
+
+model User {
+  id                String             @id @default(cuid())
+  email             String             @unique
+  firstName         String
+  lastName          String
+  jobTitle          String?
+  avatarUrl         String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  memberships       WorkspaceMember[]
+  ownedAgents       Agent[]            @relation("AgentOwner")
+  initiatedRuns     WorkflowRun[]      @relation("RunInitiator")
+  approvalRequests  ApprovalRequest[]  @relation("ApprovalRequester")
+  approvalDecisions ApprovalDecision[]
+  auditEvents       AuditEvent[]
+}
+
+model Organization {
+  id          String      @id @default(cuid())
+  name        String
+  slug        String      @unique
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  workspaces  Workspace[]
+  agents      Agent[]
+  integrations Integration[]
+}
+
+model Workspace {
+  id               String             @id @default(cuid())
+  organizationId   String
+  name             String
+  slug             String
+  description      String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  organization     Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  members          WorkspaceMember[]
+  workflows        Workflow[]
+  workflowRuns     WorkflowRun[]
+  auditEvents      AuditEvent[]
+  approvalRequests ApprovalRequest[]
+
+  @@unique([organizationId, slug])
+}
+
+model WorkspaceMember {
+  id           String         @id @default(cuid())
+  workspaceId  String
+  userId       String
+  role         MembershipRole
+  createdAt    DateTime       @default(now())
+  workspace    Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+}
+
+model Workflow {
+  id                String             @id @default(cuid())
+  workspaceId       String
+  name              String
+  slug              String
+  description       String?
+  status            WorkflowStatus     @default(DRAFT)
+  activeVersionId   String?            @unique
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  versions          WorkflowVersion[]
+  activeVersion     WorkflowVersion?   @relation("ActiveWorkflowVersion", fields: [activeVersionId], references: [id], onDelete: SetNull)
+  runs              WorkflowRun[]
+
+  @@unique([workspaceId, slug])
+}
+
+model WorkflowVersion {
+  id               String           @id @default(cuid())
+  workflowId       String
+  versionNumber    Int
+  changelog        String?
+  triggerType      TriggerType
+  triggerConfig    Json
+  inputSchema      Json?
+  outputSchema     Json?
+  publishedAt      DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  workflow         Workflow         @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  activeFor        Workflow?        @relation("ActiveWorkflowVersion")
+  steps            WorkflowStep[]
+  runs             WorkflowRun[]
+
+  @@unique([workflowId, versionNumber])
+}
+
+model WorkflowStep {
+  id                 String          @id @default(cuid())
+  workflowVersionId  String
+  key                String
+  name               String
+  description        String?
+  type               StepType
+  sequence           Int
+  config             Json
+  inputMapping       Json?
+  outputMapping      Json?
+  retryPolicy        Json?
+  timeoutSeconds     Int?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  workflowVersion    WorkflowVersion @relation(fields: [workflowVersionId], references: [id], onDelete: Cascade)
+  stepRuns           StepRun[]
+
+  @@unique([workflowVersionId, key])
+  @@unique([workflowVersionId, sequence])
+}
+
+model WorkflowRun {
+  id                  String            @id @default(cuid())
+  workspaceId         String
+  workflowId          String
+  workflowVersionId   String
+  initiatedByUserId   String?
+  status              RunStatus         @default(QUEUED)
+  correlationId       String?           @unique
+  startedAt           DateTime?
+  completedAt         DateTime?
+  failedAt            DateTime?
+  inputPayload        Json?
+  outputPayload       Json?
+  errorSummary        String?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+  workspace           Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workflow            Workflow          @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  workflowVersion     WorkflowVersion   @relation(fields: [workflowVersionId], references: [id], onDelete: Restrict)
+  initiatedBy         User?             @relation("RunInitiator", fields: [initiatedByUserId], references: [id], onDelete: SetNull)
+  stepRuns            StepRun[]
+  approvalRequests    ApprovalRequest[]
+  auditEvents         AuditEvent[]
+
+  @@index([workspaceId, status, createdAt])
+}
+
+model StepRun {
+  id                String           @id @default(cuid())
+  workflowRunId     String
+  workflowStepId    String
+  status            StepRunStatus    @default(PENDING)
+  startedAt         DateTime?
+  completedAt       DateTime?
+  attempt           Int              @default(1)
+  inputPayload      Json?
+  outputPayload     Json?
+  errorSummary      String?
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
+  workflowRun       WorkflowRun      @relation(fields: [workflowRunId], references: [id], onDelete: Cascade)
+  workflowStep      WorkflowStep     @relation(fields: [workflowStepId], references: [id], onDelete: Restrict)
+  logs              StepLog[]
+
+  @@index([workflowRunId, status])
+}
+
+model StepLog {
+  id          String   @id @default(cuid())
+  stepRunId   String
+  level       String
+  message     String
+  payload     Json?
+  createdAt   DateTime @default(now())
+  stepRun     StepRun  @relation(fields: [stepRunId], references: [id], onDelete: Cascade)
+
+  @@index([stepRunId, createdAt])
+}
+
+model Agent {
+  id               String        @id @default(cuid())
+  organizationId   String
+  ownerUserId      String?
+  name             String
+  slug             String
+  description      String?
+  provider         String
+  model            String
+  systemPrompt     String?
+  capabilities     Json?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  organization     Organization  @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  owner            User?         @relation("AgentOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, slug])
+}
+
+model Integration {
+  id               String       @id @default(cuid())
+  organizationId   String
+  name             String
+  slug             String
+  provider         String
+  status           String
+  config           Json?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  organization     Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, slug])
+}
+
+model ApprovalRequest {
+  id                String              @id @default(cuid())
+  workspaceId       String
+  workflowRunId     String
+  requestedByUserId String?
+  stepKey           String
+  title             String
+  description       String?
+  status            ApprovalStatus      @default(PENDING)
+  dueAt             DateTime?
+  metadata          Json?
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  workspace         Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workflowRun       WorkflowRun         @relation(fields: [workflowRunId], references: [id], onDelete: Cascade)
+  requestedBy       User?               @relation("ApprovalRequester", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+  decisions         ApprovalDecision[]
+
+  @@index([workspaceId, status, createdAt])
+}
+
+model ApprovalDecision {
+  id                 String           @id @default(cuid())
+  approvalRequestId  String
+  decidedByUserId    String
+  decision           ApprovalStatus
+  comment            String?
+  createdAt          DateTime         @default(now())
+  approvalRequest    ApprovalRequest  @relation(fields: [approvalRequestId], references: [id], onDelete: Cascade)
+  decidedBy          User             @relation(fields: [decidedByUserId], references: [id], onDelete: Cascade)
+}
+
+model AuditEvent {
+  id             String         @id @default(cuid())
+  workspaceId    String
+  workflowRunId  String?
+  actorUserId    String?
+  actorType      AuditActorType
+  action         String
+  resourceType   String
+  resourceId     String
+  metadata       Json?
+  createdAt      DateTime       @default(now())
+  workspace      Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workflowRun    WorkflowRun?   @relation(fields: [workflowRunId], references: [id], onDelete: SetNull)
+  actorUser      User?          @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([resourceType, resourceId])
+}
