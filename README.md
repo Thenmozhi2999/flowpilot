@@ -234,7 +234,7 @@ Why that matters:
 
 For more technical architecture details, see [docs/architecture.md](./docs/architecture.md).
 
-## Portfolio Summary
+## Summary
 
 FlowPilot is a portfolio-quality MVP that demonstrates:
 
